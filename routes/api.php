@@ -112,3 +112,50 @@ Route::get('/tareas/update-pokemon', function (Request $request) {
         ], 500);
     }
 });
+
+Route::get('/tareas/ejecutar', function (Request $request) {
+    // 1. ESCUDO 1: El Token Secreto
+    $secret = env('CRON_SECRET');
+    if (!$secret || $request->query('token') !== $secret) {
+        abort(403, 'Acceso denegado. Token inválido.');
+    }
+
+    // 2. Extraer el comando de la URL
+    $comando = $request->query('comando');
+    if (!$comando) {
+        return response()->json(['error' => 'Falta el parámetro "comando" en la URL.'], 400);
+    }
+
+    // 3. ESCUDO 2: LA LISTA BLANCA (¡Seguridad vital!)
+    // Solo los comandos exactos que escribas aquí podrán ser ejecutados desde la web.
+    $comandosPermitidos = [
+        'tcg:update-prices',
+        'tcg:import-one-piece',
+        'tcg:update-pokemon-prices',
+        'db:seed' // Recuerda quitar este cuando ya tengas tus usuarios base
+    ];
+
+    if (!in_array($comando, $comandosPermitidos)) {
+        abort(403, "El comando '{$comando}' no está autorizado en la lista blanca.");
+    }
+
+    // 4. Ejecución
+    set_time_limit(0); // Tiempo ilimitado
+
+    try {
+        // Ejecutamos el comando (forzando si es necesario para producción)
+        Artisan::call($comando, ['--force' => true]);
+        
+        return response()->json([
+            'status' => 'success',
+            'comando_ejecutado' => $comando,
+            'output' => Artisan::output()
+        ]);
+    } catch (\Exception $e) {
+        return response()->json([
+            'status' => 'error',
+            'comando_fallido' => $comando,
+            'message' => $e->getMessage()
+        ], 500);
+    }
+});
