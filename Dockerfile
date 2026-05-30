@@ -40,3 +40,10 @@ RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cac
 
 # 11. Exponemos el puerto 80 para que Render pueda enviar tráfico
 EXPOSE 80
+
+# 12. Copiamos nuestro script de arranque y le damos permisos de ejecución
+COPY start.sh /usr/local/bin/start.sh
+RUN chmod +x /usr/local/bin/start.sh
+
+# 13. Le decimos a Docker que arranque ejecutando nuestro script
+CMD ["/usr/local/bin/start.sh"]
