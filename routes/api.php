@@ -132,7 +132,9 @@ Route::get('/tareas/ejecutar', function (Request $request) {
         'tcg:update-prices',
         'tcg:import-one-piece',
         'tcg:update-pokemon-prices',
-        'db:seed' // Recuerda quitar este cuando ya tengas tus usuarios base
+        'db:seed',
+        'tcg:scrape-bandai-global', // 🚀 Autorizado
+        'tcg:scrape-bandai'         // 🚀 Autorizad // Recuerda quitar este cuando ya tengas tus usuarios base
     ];
 
     if (!in_array($comando, $comandosPermitidos)) {
