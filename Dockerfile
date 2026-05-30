@@ -30,8 +30,9 @@ WORKDIR /var/www/html
 # 5. Copiamos el código
 COPY . .
 
-# 6. Ejecutar la instalación (ahora con PHP 8.3 coincidirá con tu composer.lock)
-RUN composer install --no-dev --no-scripts --no-interaction --prefer-dist
+# 6. Ejecutar la instalación (con escudos de memoria y plataforma)
+ENV COMPOSER_MEMORY_LIMIT=-1
+RUN composer install --no-dev --no-scripts --no-interaction --prefer-dist --ignore-platform-reqs
 
 # 7. Permisos
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
