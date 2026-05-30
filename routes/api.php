@@ -6,6 +6,8 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CardCatalogController;
 use App\Http\Controllers\CollectionController;
 use App\Http\Controllers\GameController;
+use Illuminate\Support\Facades\Artisan;
+
 
 
 // --- RUTAS PÚBLICAS ---
@@ -53,4 +55,60 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/prices/{card_id}', [PriceController::class, 'show']);
     
+});
+
+
+Route::get('/tareas/update-prices', function (Request $request) {
+    // 1. SISTEMA DE SEGURIDAD: Comprobamos el token
+    $secret = env('CRON_SECRET');
+    if (!$secret || $request->query('token') !== $secret) {
+        abort(403, 'Acceso denegado. Token inválido.');
+    }
+
+    // 2. Dar tiempo infinito a PHP (porque la descarga puede tardar)
+    set_time_limit(0);
+
+    try {
+        // 3. Ejecutamos tu comando Artisan
+        Artisan::call('tcg:update-prices');
+        
+        return response()->json([
+            'status' => 'success',
+            'message' => '¡Precios actualizados!',
+            'output' => Artisan::output() // Te mostrará el log del comando
+        ]);
+    } catch (\Exception $e) {
+        return response()->json([
+            'status' => 'error',
+            'message' => $e->getMessage()
+        ], 500);
+    }
+});
+
+Route::get('/tareas/update-pokemon', function (Request $request) {
+    // 1. Reutilizamos el mismo sistema de seguridad
+    $secret = env('CRON_SECRET');
+    if (!$secret || $request->query('token') !== $secret) {
+        abort(403, 'Acceso denegado. Token inválido.');
+    }
+
+    // 2. Dar tiempo infinito
+    set_time_limit(0);
+
+    try {
+        // 3. 🚀 AQUÍ PON TU COMANDO DE POKÉMON
+        // Cambia 'tcg:update-pokemon-prices' por el nombre real de tu comando
+        Artisan::call('tcg:update-pokemon-prices'); 
+        
+        return response()->json([
+            'status' => 'success',
+            'message' => '¡Base de datos de Pokémon actualizada!',
+            'output' => Artisan::output()
+        ]);
+    } catch (\Exception $e) {
+        return response()->json([
+            'status' => 'error',
+            'message' => $e->getMessage()
+        ], 500);
+    }
 });
