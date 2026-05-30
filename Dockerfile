@@ -1,52 +1,43 @@
-# 1. Usamos una imagen oficial de PHP con Apache
-FROM php:8.2-apache
+# 1. CAMBIO CRÍTICO: Usamos php:8.3 en lugar de 8.2
+FROM php:8.3-apache
 
-# 2. Instalamos dependencias del sistema (¡Añadimos libpq-dev para Neon y libzip-dev!)
+# Instalar dependencias del sistema indispensables (AHORA INCLUYE LAS GRÁFICAS PARA GD)
 RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    libpng-dev \
-    libonig-dev \
-    libxml2-dev \
-    libzip-dev \
     libpq-dev \
+    libicu-dev \
+    libzip-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libfreetype6-dev \
     zip \
-    unzip
+    unzip \
+    git \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install pdo pdo_pgsql intl zip gd
 
-# 3. Limpiamos la caché para que el servidor sea más ligero
-RUN apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# 4. Instalamos las extensiones de PHP (¡Añadimos pdo_pgsql y zip!)
-RUN docker-php-ext-install pdo_mysql pdo_pgsql mbstring exif pcntl bcmath gd zip
-
-# 5. Habilitamos el mod_rewrite de Apache
-RUN a2enmod rewrite
-
-# 6. Apuntamos el servidor web a la carpeta "public" de Laravel
+# 2. Configurar Apache
 ENV APACHE_DOCUMENT_ROOT /var/www/html/public
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
-RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+RUN a2enmod rewrite
 
-# 7. Instalamos Composer
+# 3. Instalar Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-# 8. Copiamos todo tu código de Laravel al servidor
+# 4. Preparar el directorio
 WORKDIR /var/www/html
+
+# 5. Copiamos el código
 COPY . .
 
-# 9. Damos memoria ilimitada a Composer y ejecutamos la instalación
-ENV COMPOSER_MEMORY_LIMIT=-1
-RUN composer install --optimize-autoloader --no-dev
+# 6. Ejecutar la instalación (ahora con PHP 8.3 coincidirá con tu composer.lock)
+RUN composer install --no-dev --no-scripts --no-interaction --prefer-dist
 
-# 10. Damos permisos a las carpetas que Laravel necesita
+# 7. Permisos
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+RUN chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
 
-# 11. Exponemos el puerto 80
 EXPOSE 80
 
-# 12. Copiamos nuestro script de arranque y le damos permisos
-COPY start.sh /usr/local/bin/start.sh
-RUN chmod +x /usr/local/bin/start.sh
-
-# 13. Le decimos a Docker que arranque ejecutando nuestro script
-CMD ["/usr/local/bin/start.sh"]
+# Al final de tu Dockerfile, después del EXPOSE 80
+CMD php artisan migrate --force && apache2-foreground
