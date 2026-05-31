@@ -6,6 +6,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CardCatalogController;
 use App\Http\Controllers\CollectionController;
 use App\Http\Controllers\GameController;
+use App\Http\Controllers\PriceController;
 use Illuminate\Support\Facades\Artisan;
 
 
