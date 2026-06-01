@@ -22,13 +22,14 @@ class OpScrapeCards extends Command
     ];
 
     // 🚀 NUEVO: Radar automático para encontrar el navegador en cualquier servidor Linux
+    // 🚀 NUEVO: Radar automático ajustado para priorizar Chrome
     private function getChromePath()
     {
         $paths = [
-            '/usr/bin/chromium-browser', // Ubuntu estándar
-            '/usr/bin/google-chrome',    // Chrome estándar
-            '/usr/bin/chromium',         // Debian estándar
-            '/snap/bin/chromium'         // Snap (versiones modernas de Ubuntu)
+            '/usr/bin/google-chrome',    // 🚀 1. Buscamos el Chrome de verdad primero
+            '/usr/bin/chromium',         // 2. Por si acaso
+            '/usr/bin/chromium-browser', // 3. El fantasma de Snap lo dejamos para el final
+            '/snap/bin/chromium'         
         ];
 
         foreach ($paths as $path) {
@@ -36,9 +37,8 @@ class OpScrapeCards extends Command
                 return $path;
             }
         }
-        return null; // Si no lo encuentra, Browsershot intentará apañárselas solo
+        return null; 
     }
-
     public function handle()
     {
         $regionArg = $this->argument('region');
