@@ -63,9 +63,10 @@ class OpScrapeCards extends Command
                 $colorsToSearch = ['']; 
                 
                 try {
-                    $testHtml = Browsershot::url("https://{$domain}/cardlist/?series={$seriesId}&page=1")
-                        ->setChromePath('C:\Program Files\Google\Chrome\Application\chrome.exe')
-                        ->waitUntilNetworkIdle()->timeout(60)->bodyHtml();
+                    $html = Browsershot::url($url)
+                        ->waitUntilNetworkIdle()
+                        ->timeout(60)
+                        ->bodyHtml();
                         
                     if (str_contains($testHtml, 'Too many search results') || str_contains($testHtml, 'too many')) {
                         $this->warn("      ⚠️ Colección masiva detectada. Dividiendo por colores...");
@@ -92,8 +93,7 @@ class OpScrapeCards extends Command
 
                         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                             try {
-                                $html = Browsershot::url($currentUrl)
-                                    ->setChromePath('C:\Program Files\Google\Chrome\Application\chrome.exe')
+                                $html = Browsershot::url($url)
                                     ->waitUntilNetworkIdle()
                                     ->timeout(60)
                                     ->bodyHtml();
@@ -198,9 +198,10 @@ class OpScrapeCards extends Command
     {
         $seriesMap = [];
         try {
-            $html = Browsershot::url("https://{$domain}/cardlist/")
-                ->setChromePath('C:\Program Files\Google\Chrome\Application\chrome.exe')
-                ->waitUntilNetworkIdle()->timeout(60)->bodyHtml();
+            $html = Browsershot::url($url)
+                    ->waitUntilNetworkIdle()
+                    ->timeout(60)
+                    ->bodyHtml();
 
             $crawler = new Crawler($html);
             $crawler->filter('li.selModalClose, select[name="series"] option')->each(function (Crawler $node) use (&$seriesMap) {
