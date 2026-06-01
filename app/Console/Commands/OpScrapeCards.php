@@ -21,6 +21,24 @@ class OpScrapeCards extends Command
         'fr'      => 'fr.onepiece-cardgame.com',
     ];
 
+    // 🚀 NUEVO: Radar automático para encontrar el navegador en cualquier servidor Linux
+    private function getChromePath()
+    {
+        $paths = [
+            '/usr/bin/chromium-browser', // Ubuntu estándar
+            '/usr/bin/google-chrome',    // Chrome estándar
+            '/usr/bin/chromium',         // Debian estándar
+            '/snap/bin/chromium'         // Snap (versiones modernas de Ubuntu)
+        ];
+
+        foreach ($paths as $path) {
+            if (file_exists($path)) {
+                return $path;
+            }
+        }
+        return null; // Si no lo encuentra, Browsershot intentará apañárselas solo
+    }
+
     public function handle()
     {
         $regionArg = $this->argument('region');
@@ -35,12 +53,17 @@ class OpScrapeCards extends Command
             return;
         }
 
+        $chromePath = $this->getChromePath();
+        if ($chromePath) {
+            $this->info("⚙️  Navegador detectado automáticamente en: " . $chromePath);
+        }
+
         foreach ($regionsToRun as $regionCode) {
             $domain = $this->regionsConfig[$regionCode];
             $this->info("🌍 INICIANDO EXTRACCIÓN: Región [{$regionCode}] -> {$domain}");
 
             $this->line("   🔍 Leyendo el menú de expansiones de Bandai...");
-            $seriesMap = $this->fetchSeriesMap($domain);
+            $seriesMap = $this->fetchSeriesMap($domain, $chromePath);
 
             if (empty($seriesMap)) {
                 $this->error("   ❌ No se encontraron expansiones para {$regionCode}.");
@@ -63,16 +86,16 @@ class OpScrapeCards extends Command
                 $colorsToSearch = ['']; 
                 
                 try {
-                    // 🚀 FIX: Definimos la URL de prueba correctamente
                     $testUrl = "https://{$domain}/cardlist/?series={$seriesId}";
                     
-                    // 🚀 FIX: Usamos la variable $testHtml para todo este bloque
-                    $testHtml = Browsershot::url($testUrl) // (o $testUrl / $currentUrl según el bloque)
-                        ->setChromePath('/usr/bin/chromium') // 🚀 LA RUTA FIJA DE LINUX
+                    $browser = Browsershot::url($testUrl)
                         ->noSandbox()
                         ->waitUntilNetworkIdle()
-                        ->timeout(60)
-                        ->bodyHtml();
+                        ->timeout(60);
+                    
+                    if ($chromePath) $browser->setChromePath($chromePath);
+                    
+                    $testHtml = $browser->bodyHtml();
                         
                     if (str_contains($testHtml, 'Too many search results') || str_contains($testHtml, 'too many')) {
                         $this->warn("      ⚠️ Colección masiva detectada. Dividiendo por colores...");
@@ -92,35 +115,34 @@ class OpScrapeCards extends Command
                         $currentUrl = "https://{$domain}/cardlist/?series={$seriesId}{$colorParam}&page={$page}";
                         $this->line("      📄 Leyendo pág {$page}" . ($colorCode !== '' ? " (Color {$colorCode})" : "") . "...");
 
-                        // 🛡️ SISTEMA DE AUTO-REINTENTO (3 STRIKES)
                         $html = null;
                         $maxRetries = 3;
                         $success = false;
 
                         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                             try {
-                                // 🚀 FIX: Usamos $currentUrl en lugar de la variable no definida $url
-                                $html = Browsershot::url($url) // (o $testUrl / $currentUrl según el bloque)
-                                    ->setChromePath('/usr/bin/chromium') // 🚀 LA RUTA FIJA DE LINUX
+                                $browserLoop = Browsershot::url($currentUrl)
                                     ->noSandbox()
                                     ->waitUntilNetworkIdle()
-                                    ->timeout(60)
-                                    ->bodyHtml();
+                                    ->timeout(60);
+                                
+                                if ($chromePath) $browserLoop->setChromePath($chromePath);
+                                
+                                $html = $browserLoop->bodyHtml();
                                 $success = true;
-                                break; // Si funciona, rompemos el bucle de reintentos
+                                break; 
                             } catch (\Exception $e) {
                                 if ($attempt === $maxRetries) {
                                     $this->error("      ❌ Fallo tras 3 intentos en pág {$page}: " . $e->getMessage());
                                 } else {
                                     $this->warn("      ⚠️ Corte de Bandai. Reintentando en 5s (Intento {$attempt}/{$maxRetries})...");
-                                    sleep(5); // Respiración de 5 segundos
+                                    sleep(5);
                                 }
                             }
                         }
 
-                        if (!$success) break; // Si tras 3 intentos no hay HTML, pasa al siguiente color/expansión
+                        if (!$success) break; 
 
-                        // Procesamiento del HTML...
                         $crawler = new Crawler($html);
                         $cartasEnEstaPagina = []; 
                         
@@ -200,20 +222,20 @@ class OpScrapeCards extends Command
         }
     }
 
-    private function fetchSeriesMap($domain)
+    private function fetchSeriesMap($domain, $chromePath)
     {
         $seriesMap = [];
-        
-        // 🚀 FIX: Ahora sí declaramos la URL para poder buscar el menú
         $url = "https://{$domain}/cardlist/";
 
         try {
-            $html = Browsershot::url($url) // (o $testUrl / $currentUrl según el bloque)
-                ->setChromePath('/usr/bin/chromium') // 🚀 LA RUTA FIJA DE LINUX
+            $browserMenu = Browsershot::url($url)
                 ->noSandbox()
                 ->waitUntilNetworkIdle()
-                ->timeout(60)
-                ->bodyHtml();
+                ->timeout(60);
+            
+            if ($chromePath) $browserMenu->setChromePath($chromePath);
+            
+            $html = $browserMenu->bodyHtml();
 
             $crawler = new Crawler($html);
             $crawler->filter('li.selModalClose, select[name="series"] option')->each(function (Crawler $node) use (&$seriesMap) {
@@ -224,7 +246,6 @@ class OpScrapeCards extends Command
                 }
             });
         } catch (\Exception $e) {
-            // 🚀 FIX: Si hay error, lo mostramos por consola para no ir a ciegas
             $this->error("💥 Error obteniendo el menú: " . $e->getMessage());
         }
         
