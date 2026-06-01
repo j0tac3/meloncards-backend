@@ -63,7 +63,11 @@ class OpScrapeCards extends Command
                 $colorsToSearch = ['']; 
                 
                 try {
-                    $html = Browsershot::url($url)
+                    // 🚀 FIX: Definimos la URL de prueba correctamente
+                    $testUrl = "https://{$domain}/cardlist/?series={$seriesId}";
+                    
+                    // 🚀 FIX: Usamos la variable $testHtml para todo este bloque
+                    $testHtml = Browsershot::url($testUrl)
                         ->noSandbox()
                         ->waitUntilNetworkIdle()
                         ->timeout(60)
@@ -74,7 +78,7 @@ class OpScrapeCards extends Command
                         $colorsToSearch = ['1', '2', '3', '4', '5', '6'];
                     }
                 } catch (\Exception $e) {
-                    $this->error("      ❌ Error de comprobación. Saltando...");
+                    $this->error("      ❌ Error de comprobación: " . $e->getMessage());
                     continue;
                 }
 
@@ -94,7 +98,8 @@ class OpScrapeCards extends Command
 
                         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                             try {
-                                $html = Browsershot::url($url)
+                                // 🚀 FIX: Usamos $currentUrl en lugar de la variable no definida $url
+                                $html = Browsershot::url($currentUrl)
                                     ->noSandbox()
                                     ->waitUntilNetworkIdle()
                                     ->timeout(60)
@@ -103,7 +108,7 @@ class OpScrapeCards extends Command
                                 break; // Si funciona, rompemos el bucle de reintentos
                             } catch (\Exception $e) {
                                 if ($attempt === $maxRetries) {
-                                    $this->error("      ❌ Fallo tras 3 intentos en pág {$page}. Saltando.");
+                                    $this->error("      ❌ Fallo tras 3 intentos en pág {$page}: " . $e->getMessage());
                                 } else {
                                     $this->warn("      ⚠️ Corte de Bandai. Reintentando en 5s (Intento {$attempt}/{$maxRetries})...");
                                     sleep(5); // Respiración de 5 segundos
@@ -135,10 +140,8 @@ class OpScrapeCards extends Command
                                 $imageRelativeUrl = $imgNode->count() > 0 ? ($imgNode->attr('data-src') ?: $imgNode->attr('src')) : '';
                                 $imageRelativeUrl = explode('?', $imageRelativeUrl)[0];
                                 
-                                // 🚀 NUEVO: Extraer el nombre de la imagen como ID Único (Ej: "OP02-018_p1")
                                 $filename = basename(parse_url($imageRelativeUrl, PHP_URL_PATH));
                                 $uniqueId = preg_replace('/\.[^.]+$/', '', $filename);
-                                // Si por algún motivo falla, usamos el ID normal
                                 if (empty($uniqueId)) $uniqueId = $cardNumber;
 
                                 $imageUrl = str_starts_with($imageRelativeUrl, 'http') ? $imageRelativeUrl : "https://{$domain}/" . ltrim(str_replace('../', '', $imageRelativeUrl), '/');
@@ -156,10 +159,9 @@ class OpScrapeCards extends Command
                                     if (preg_match('/\d+/', $node->filter('.life')->text(), $matches)) $life = (int)$matches[0];
                                 }
 
-                                // 🚀 NUEVO: Guardamos usando $uniqueId en lugar de $cardNumber
                                 $allCardsData[$uniqueId] = [
-                                    'unique_id' => $uniqueId, // Nuevo campo clave
-                                    'id' => $cardNumber,      // El ID oficial (OP02-018)
+                                    'unique_id' => $uniqueId,
+                                    'id' => $cardNumber,      
                                     'name' => $cleanName,
                                     'set_name' => $seriesName,
                                     'image_url' => $imageUrl,
@@ -199,6 +201,10 @@ class OpScrapeCards extends Command
     private function fetchSeriesMap($domain)
     {
         $seriesMap = [];
+        
+        // 🚀 FIX: Ahora sí declaramos la URL para poder buscar el menú
+        $url = "https://{$domain}/cardlist/";
+
         try {
             $html = Browsershot::url($url)
                     ->noSandbox()
@@ -214,7 +220,10 @@ class OpScrapeCards extends Command
                     $seriesMap[$val] = $name;
                 }
             });
-        } catch (\Exception $e) {}
+        } catch (\Exception $e) {
+            // 🚀 FIX: Si hay error, lo mostramos por consola para no ir a ciegas
+            $this->error("💥 Error obteniendo el menú: " . $e->getMessage());
+        }
         
         return $seriesMap;
     }
