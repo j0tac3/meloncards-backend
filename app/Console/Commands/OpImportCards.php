@@ -70,7 +70,7 @@ class OpImportCards extends Command
             $fallbackImage = $mainSource['image_url'] ?? '';
             $fallbackSetName = $mainSource['set_name'] ?? 'Expansión ' . explode('-', $cardNumber)[0];
 
-            preg_match('/\[(.*?)\]/', $fallbackSetName, $matches);
+            preg_match('/(?:\[|【)(.*?)(?:\]|】)/u', $fallbackSetName, $matches);
             $realSetCode = $matches[1] ?? explode('-', $cardNumber)[0] ?? 'PROMO';
 
             $localizedAttributes = [
@@ -103,7 +103,7 @@ class OpImportCards extends Command
             $set = CardSet::where('code', $realSetCode)->where('region', 'en')->first();
             if (!$set) $set = CardSet::where('code', $realSetCode)->first();
             if (!$set) {
-                $cleanName = trim(preg_replace('/\[.*?\]/', '', $fallbackSetName));
+                $cleanName = trim(preg_replace('/(?:\[|【).*?(?:\]|】)/u', '', $fallbackSetName));
                 $set = CardSet::create([
                     'game_id' => $game->id, 'name' => $cleanName, 'code' => $realSetCode, 'region' => 'en'
                 ]);
@@ -113,8 +113,9 @@ class OpImportCards extends Command
             $finalAttributes = array_merge($baseAttributes, $localizedAttributes);
 
             CardTemplate::updateOrCreate(
-                ['card_set_id' => $set->id, 'unique_id' => $uniqueId], 
+                ['unique_id' => $uniqueId], // 🚀 BÚSQUEDA: Solo miramos si la carta existe en toda la BD
                 [
+                    'card_set_id' => $set->id, // 🚀 ACTUALIZACIÓN: Si existe, la movemos a su caja correcta
                     'card_number' => $cardNumber, 
                     'name' => $fallbackName,
                     'image_url' => $fallbackImage,
@@ -127,11 +128,23 @@ class OpImportCards extends Command
         $bar->finish();
         $this->newLine(2);
         
-        $this->info('🧮 Calculando el número total de cartas por expansión...');
-        $sets = CardSet::where('game_id', $game->id)->get();
-        foreach ($sets as $set) {
-            $count = CardTemplate::where('card_set_id', $set->id)->count();
-            if ($count > 0) $set->update(['total_cards' => $count]);
+        $this->info('🧮 Sincronizando el número total de cartas en todas las regiones...');
+        
+        // 1. Obtenemos todos los códigos únicos de las expansiones (ej: OP-16, ST-05)
+        $uniqueCodes = CardSet::where('game_id', $game->id)->distinct()->pluck('code');
+        
+        foreach ($uniqueCodes as $code) {
+            // 2. Buscamos la caja "maestra" (la inglesa, que es la que se quedó las cartas)
+            $masterSet = CardSet::where('code', $code)->where('region', 'en')->first() 
+                      ?? CardSet::where('code', $code)->first();
+            
+            if ($masterSet) {
+                // 3. Contamos cuántas cartas tiene la caja maestra
+                $count = CardTemplate::where('card_set_id', $masterSet->id)->count();
+                
+                // 4. 🚀 MAGIA: Le ponemos ese total a TODAS las cajas del mundo con ese código
+                CardSet::where('code', $code)->update(['total_cards' => $count]);
+            }
         }
 
         $this->info('🎉 ¡BD Reconstruida: Juego, Regiones y Cartas sincronizadas!');

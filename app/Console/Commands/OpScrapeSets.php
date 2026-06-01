@@ -60,7 +60,7 @@ class OpScrapeSets extends Command
                     try {
                         $title = $node->filter('.linkListColTitle')->text();
                         
-                        if (preg_match('/\[(.*?)\]/', $title, $matches)) {
+                        if (preg_match('/(?:\[|【)(.*?)(?:\]|】)/u', $title, $matches)) {
                             $code = $matches[1];
                             $cleanCode = str_replace(['-', ' '], '', $code);
                             
@@ -94,7 +94,7 @@ class OpScrapeSets extends Command
                             $dateNode = $node->filter('time.newsDate');
                             $releaseDate = $dateNode->count() > 0 ? $dateNode->attr('datetime') : null;
 
-                            $cleanName = trim(preg_replace('/\[.*?\]/', '', $title));
+                            $cleanName = trim(preg_replace('/(?:\[|【).*?(?:\]|】)/u', '', $title));
                             $rawFamily = explode('-', $code)[0] ?? '';
                             $family = preg_replace('/[^A-Za-z]/', '', $rawFamily);
 
