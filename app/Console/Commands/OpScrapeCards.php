@@ -67,7 +67,8 @@ class OpScrapeCards extends Command
                     $testUrl = "https://{$domain}/cardlist/?series={$seriesId}";
                     
                     // 🚀 FIX: Usamos la variable $testHtml para todo este bloque
-                    $testHtml = Browsershot::url($testUrl)
+                    $testHtml = Browsershot::url($testUrl) // (o $testUrl / $currentUrl según el bloque)
+                        ->setChromePath('/usr/bin/chromium') // 🚀 LA RUTA FIJA DE LINUX
                         ->noSandbox()
                         ->waitUntilNetworkIdle()
                         ->timeout(60)
@@ -99,7 +100,8 @@ class OpScrapeCards extends Command
                         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                             try {
                                 // 🚀 FIX: Usamos $currentUrl en lugar de la variable no definida $url
-                                $html = Browsershot::url($currentUrl)
+                                $html = Browsershot::url($url) // (o $testUrl / $currentUrl según el bloque)
+                                    ->setChromePath('/usr/bin/chromium') // 🚀 LA RUTA FIJA DE LINUX
                                     ->noSandbox()
                                     ->waitUntilNetworkIdle()
                                     ->timeout(60)
@@ -206,11 +208,12 @@ class OpScrapeCards extends Command
         $url = "https://{$domain}/cardlist/";
 
         try {
-            $html = Browsershot::url($url)
-                    ->noSandbox()
-                    ->waitUntilNetworkIdle()
-                    ->timeout(60)
-                    ->bodyHtml();
+            $html = Browsershot::url($url) // (o $testUrl / $currentUrl según el bloque)
+                ->setChromePath('/usr/bin/chromium') // 🚀 LA RUTA FIJA DE LINUX
+                ->noSandbox()
+                ->waitUntilNetworkIdle()
+                ->timeout(60)
+                ->bodyHtml();
 
             $crawler = new Crawler($html);
             $crawler->filter('li.selModalClose, select[name="series"] option')->each(function (Crawler $node) use (&$seriesMap) {
