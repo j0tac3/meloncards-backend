@@ -64,6 +64,7 @@ class OpScrapeCards extends Command
                 
                 try {
                     $html = Browsershot::url($url)
+                        ->noSandbox()
                         ->waitUntilNetworkIdle()
                         ->timeout(60)
                         ->bodyHtml();
@@ -94,6 +95,7 @@ class OpScrapeCards extends Command
                         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                             try {
                                 $html = Browsershot::url($url)
+                                    ->noSandbox()
                                     ->waitUntilNetworkIdle()
                                     ->timeout(60)
                                     ->bodyHtml();
@@ -199,6 +201,7 @@ class OpScrapeCards extends Command
         $seriesMap = [];
         try {
             $html = Browsershot::url($url)
+                    ->noSandbox()
                     ->waitUntilNetworkIdle()
                     ->timeout(60)
                     ->bodyHtml();
