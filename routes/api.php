@@ -23,16 +23,35 @@ Route::get('/cards/{id}', [CardCatalogController::class, 'show']);
 Route::get('/games', [GameController::class, 'index']);
 Route::get('/games/{slug}', [GameController::class, 'show']);
 
+// routes/api.php
+// routes/api.php
+// routes/api.php
+// routes/api.php
+
 Route::get('/sets', function (Request $request) {
-    $query = \App\Models\CardSet::select('id', 'name')->orderBy('name');
-    
-    // 🚀 NUEVO: Filtramos las expansiones por el juego seleccionado
+    $query = \App\Models\CardSet::where('total_cards', '>', 0)
+                                ->whereNotNull('family')
+                                ->orderBy('release_date', 'desc');
+
     if ($request->filled('game_id')) {
         $query->where('game_id', $request->game_id);
     }
     
-    return response()->json($query->get());
+    $region = $request->input('region', 'en'); 
+    $query->where('region', $region);
+    
+    // 🚀 NUEVO: Modificamos los resultados antes de enviarlos
+    $sets = $query->get()->map(function ($set) {
+        // Si la imagen es local (empieza por /storage), le ponemos el dominio completo de Laravel
+        if ($set->image_url && str_starts_with($set->image_url, '/storage')) {
+            $set->image_url = url($set->image_url);
+        }
+        return $set;
+    });
+    
+    return response()->json($sets);
 });
+
 // Rutas Públicas...
 Route::get('/card-states', function () {
     return response()->json(\App\Models\CardState::all());

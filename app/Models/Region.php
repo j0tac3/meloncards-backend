@@ -9,6 +9,8 @@ class Region extends Model
 {
     use HasFactory;
 
+    protected $fillable = ['game_id', 'name', 'code', 'region', 'total_cards', 'family', 'release_date', 'image_url'];
+
     protected $guarded = [];
 
     // Relación: Una región pertenece a muchos juegos
