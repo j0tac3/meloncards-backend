@@ -7,8 +7,8 @@ use App\Http\Controllers\CardCatalogController;
 use App\Http\Controllers\CollectionController;
 use App\Http\Controllers\GameController;
 use App\Http\Controllers\PriceController;
+use App\Http\Controllers\ChecklistController;
 use Illuminate\Support\Facades\Artisan;
-
 
 
 // --- RUTAS PÚBLICAS ---
@@ -74,5 +74,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/collection/count/{cardId}', [CollectionController::class, 'getOwnedCount']);
 
     Route::get('/prices/{card_id}', [PriceController::class, 'show']);
+
     
 });
+    Route::get('/sets/{code}/checklist/pdf', [ChecklistController::class, 'downloadPdf']);
