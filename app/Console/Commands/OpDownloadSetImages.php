@@ -7,15 +7,16 @@ use App\Models\CardSet;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Process; // 🚀 Necesario para ejecutar Node.js
 
 class OpDownloadSetImages extends Command
 {
     protected $signature = 'op:download-set-images';
-    protected $description = 'Descarga las imágenes de Bandai y las guarda en el servidor local';
+    protected $description = 'Descarga las imágenes de Bandai, las recorta y las guarda en el servidor local';
 
     public function handle()
     {
-        $this->info('🖼 Iniciando descarga de carátulas...');
+        $this->info('🖼 Iniciando descarga y recorte de carátulas...');
 
         // Buscamos solo los sets cuya URL empiece por "http" (es decir, las de Bandai). 
         // Si ya las hemos descargado, empezarán por "/storage/...", así que las ignorará y ahorramos tiempo.
@@ -42,6 +43,15 @@ class OpDownloadSetImages extends Command
                 // La guardamos físicamente en storage/app/public/sets/
                 Storage::disk('public')->put("sets/{$filename}", $imageContents);
 
+                // 🚀 EXTRAEMOS LA RUTA ABSOLUTA Y LLAMAMOS A NODE.JS
+                $rutaAbsoluta = Storage::disk('public')->path("sets/{$filename}");
+                $resultado = Process::run("node auto-recortar.js \"{$rutaAbsoluta}\"");
+
+                // Verificamos si Node tiró algún error para registrarlo, pero el proceso sigue
+                if (!$resultado->successful()) {
+                    $this->error("\n⚠️ Advertencia: No se pudo recortar [{$set->code}] de forma automática: " . $resultado->errorOutput());
+                }
+
                 // Actualizamos la base de datos para que apunte a NUESTRO servidor
                 $set->update([
                     'image_url' => "/storage/sets/{$filename}"
@@ -62,6 +72,6 @@ class OpDownloadSetImages extends Command
         // Comando mágico de Laravel para que las imágenes sean públicas en la web
         $this->call('storage:link'); 
         
-        $this->info("\n✨ ¡Todas las imágenes han sido descargadas en tu servidor de forma segura!");
+        $this->info("\n✨ ¡Todas las imágenes han sido descargadas y recortadas en tu servidor de forma segura!");
     }
 }
