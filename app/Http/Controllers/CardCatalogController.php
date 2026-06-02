@@ -15,10 +15,38 @@ class CardCatalogController extends Controller
         $query = \App\Models\CardTemplate::with(['cardSet', 'prices']); 
 
         // Filtro por nombre
+        // Filtro por nombre o código
         if ($request->filled('search')) {
-            $query->where('name', 'like', '%' . $request->search . '%');
-        }
+            $searchTerm = $request->search;
+            $cleanTerm = str_replace(['-', ' ', '–'], '', $searchTerm);
 
+            // 1. Empezamos con lo que escribió el usuario y la versión sin guiones
+            $variations = [$searchTerm, $cleanTerm];
+
+            // 2. Inteligencia de códigos Promo (Ej: "p103" -> "p-103")
+            // Si son letras seguidas de números, inyectamos el guion en medio
+            if (preg_match('/^([a-zA-Z]+)(\d+)$/', $cleanTerm, $matches)) {
+                $variations[] = $matches[1] . '-' . $matches[2];
+            }
+
+            // 3. Inteligencia de códigos de Expansión (Ej: "op01001" -> "op01-001")
+            // Si es Letra+Número seguido de 3 o 4 números, inyectamos el guion
+            if (preg_match('/^([a-zA-Z]+\d+)(\d{3,4})$/', $cleanTerm, $matches)) {
+                $variations[] = $matches[1] . '-' . $matches[2];
+            }
+
+            // Quitamos duplicados por si acaso
+            $variations = array_unique($variations);
+
+            // 4. Búsqueda nativa de Laravel (Cero fallos SQL)
+            $query->where(function($q) use ($variations) {
+                foreach ($variations as $var) {
+                    $q->orWhere('name', 'LIKE', '%' . $var . '%')
+                      ->orWhere('card_number', 'LIKE', '%' . $var . '%')
+                      ->orWhere('unique_id', 'LIKE', '%' . $var . '%');
+                }
+            });
+        }
         // El filtro por Expansión (Set)
         if ($request->filled('card_set_id')) {
             $query->where('card_set_id', $request->card_set_id);
@@ -31,6 +59,14 @@ class CardCatalogController extends Controller
             });
         }
 
+        if ($request->search === 'p103') {
+            return response()->json([
+                '1_sql_real' => $query->toSql(),
+                '2_parametros_inyectados' => $query->getBindings(),
+                '3_prueba_directa_bd' => \App\Models\CardTemplate::where('card_number', 'LIKE', '%103%')->get(['id', 'name', 'card_number', 'unique_id', 'card_set_id'])
+            ]);
+        }
+        
         $cards = $query->paginate(15);
 
         // --- TRUCO DE INFRAESTRUCTURA: OPTIMIZACIÓN EN LOTE ---
