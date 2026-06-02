@@ -45,7 +45,7 @@ class OpDownloadSetImages extends Command
 
                 // 🚀 EXTRAEMOS LA RUTA ABSOLUTA Y LLAMAMOS A NODE.JS
                 $rutaAbsoluta = Storage::disk('public')->path("sets/{$filename}");
-                $resultado = Process::run("node auto-recortar.js \"{$rutaAbsoluta}\"");
+                $resultado = Process::run("node app/Console/Commands/auto-recortar.js \"{$rutaAbsoluta}\"");
 
                 // Verificamos si Node tiró algún error para registrarlo, pero el proceso sigue
                 if (!$resultado->successful()) {
