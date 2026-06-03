@@ -8,8 +8,8 @@ use App\Http\Controllers\CollectionController;
 use App\Http\Controllers\GameController;
 use App\Http\Controllers\PriceController;
 use App\Http\Controllers\ChecklistController;
+use App\Http\Controllers\WishlistController;
 use Illuminate\Support\Facades\Artisan;
-
 
 // --- RUTAS PÚBLICAS ---
 Route::post('/register', [AuthController::class, 'register']);
@@ -23,9 +23,8 @@ Route::get('/cards/{id}', [CardCatalogController::class, 'show']);
 Route::get('/games', [GameController::class, 'index']);
 Route::get('/games/{slug}', [GameController::class, 'show']);
 
-// routes/api.php
-// routes/api.php
-// routes/api.php
+Route::get('/sets/{code}/checklist/pdf', [ChecklistController::class, 'downloadPdf']);
+
 // routes/api.php
 
 Route::get('/sets', function (Request $request) {
@@ -74,7 +73,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/collection/count/{cardId}', [CollectionController::class, 'getOwnedCount']);
 
     Route::get('/prices/{card_id}', [PriceController::class, 'show']);
-
-    
+    Route::post('/wishlist/toggle', [WishlistController::class, 'toggle']);
+    Route::get('/wishlist', [WishlistController::class, 'index']);
 });
-    Route::get('/sets/{code}/checklist/pdf', [ChecklistController::class, 'downloadPdf']);

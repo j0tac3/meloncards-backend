@@ -26,4 +26,12 @@ class CardTemplate extends Model
     {
         return $this->hasMany(CardPrice::class);
     }
+
+    /**
+     * Usuarios que tienen esta carta en su lista de deseos.
+     */
+    public function wishlistedByUsers()
+    {
+        return $this->belongsToMany(\App\Models\User::class, 'wishlists', 'card_id', 'user_id');
+    }
 }

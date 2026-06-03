@@ -51,4 +51,20 @@ class User extends Authenticatable
     {
         return $this->hasMany(UserCard::class);
     }
+
+    /**
+     * Cartas que el usuario ha añadido a su lista de deseos.
+     */
+    /**
+     * Cartas que el usuario ha añadido a su lista de deseos.
+     */
+    public function wishlistedCards()
+    {
+        return $this->belongsToMany(
+            \App\Models\CardTemplate::class, 
+            'wishlists', // 1. El nombre real de tu tabla pivote
+            'user_id',   // 2. La columna para el usuario
+            'card_id'    // 3. La columna para la carta
+        )->withTimestamps();
+    }
 }

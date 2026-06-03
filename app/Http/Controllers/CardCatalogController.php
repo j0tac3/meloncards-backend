@@ -12,7 +12,14 @@ class CardCatalogController extends Controller
     {
         // 1. Consulta base con Eager Loading (Cargamos Set y Precios)
         // 🚀 NUEVO: Añadimos 'prices' al with()
-        $query = \App\Models\CardTemplate::with(['cardSet', 'prices']); 
+        // 1. Consulta base con Eager Loading (Cargamos Set y Precios)
+        $query = \App\Models\CardTemplate::with(['cardSet', 'prices'])
+            // ✨ LA MAGIA: Si el usuario está logueado, verificamos su lista de deseos
+            ->when(auth('sanctum')->check(), function ($q) {
+                $q->withExists(['wishlistedByUsers as is_wishlisted' => function ($subQuery) {
+                    $subQuery->where('wishlists.user_id', auth('sanctum')->id());
+                }]);
+            });
 
         // Filtro por nombre
         // Filtro por nombre o código
