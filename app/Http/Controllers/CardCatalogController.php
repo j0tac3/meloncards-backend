@@ -3,115 +3,135 @@
 namespace App\Http\Controllers;
 
 use App\Models\CardTemplate;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class CardCatalogController extends Controller
 {
-    // Obtener todas las cartas (con buscador y paginación)
-    public function index(Request $request)
+    /**
+     * Catálogo paginado de cartas con búsqueda inteligente, filtros y estado de usuario.
+     * GET /api/cards
+     */
+    public function index(Request $request): JsonResponse
     {
-        // 1. Consulta base con Eager Loading (Cargamos Set y Precios)
-        // 🚀 NUEVO: Añadimos 'prices' al with()
-        // 1. Consulta base con Eager Loading (Cargamos Set y Precios)
-        $query = \App\Models\CardTemplate::with(['cardSet', 'prices'])
-            // ✨ LA MAGIA: Si el usuario está logueado, verificamos su lista de deseos
+        $query = CardTemplate::with(['cardSet', 'prices'])
+            // Si el usuario está autenticado, marcamos si tiene la carta en wishlist
             ->when(auth('sanctum')->check(), function ($q) {
-                $q->withExists(['wishlistedByUsers as is_wishlisted' => function ($subQuery) {
-                    $subQuery->where('wishlists.user_id', auth('sanctum')->id());
+                $q->withExists(['wishlistedByUsers as is_wishlisted' => function ($sub) {
+                    $sub->where('wishlists.user_id', auth('sanctum')->id());
                 }]);
             });
 
-        // Filtro por nombre
-        // Filtro por nombre o código
+        // ── Filtro por nombre / código con variaciones inteligentes ────────────
         if ($request->filled('search')) {
-            $searchTerm = $request->search;
-            $cleanTerm = str_replace(['-', ' ', '–'], '', $searchTerm);
-
-            // 1. Empezamos con lo que escribió el usuario y la versión sin guiones
-            $variations = [$searchTerm, $cleanTerm];
-
-            // 2. Inteligencia de códigos Promo (Ej: "p103" -> "p-103")
-            // Si son letras seguidas de números, inyectamos el guion en medio
-            if (preg_match('/^([a-zA-Z]+)(\d+)$/', $cleanTerm, $matches)) {
-                $variations[] = $matches[1] . '-' . $matches[2];
-            }
-
-            // 3. Inteligencia de códigos de Expansión (Ej: "op01001" -> "op01-001")
-            // Si es Letra+Número seguido de 3 o 4 números, inyectamos el guion
-            if (preg_match('/^([a-zA-Z]+\d+)(\d{3,4})$/', $cleanTerm, $matches)) {
-                $variations[] = $matches[1] . '-' . $matches[2];
-            }
-
-            // Quitamos duplicados por si acaso
-            $variations = array_unique($variations);
-
-            // 4. Búsqueda nativa de Laravel (Cero fallos SQL)
-            $query->where(function($q) use ($variations) {
-                foreach ($variations as $var) {
-                    $q->orWhere('name', 'LIKE', '%' . $var . '%')
-                      ->orWhere('card_number', 'LIKE', '%' . $var . '%')
-                      ->orWhere('unique_id', 'LIKE', '%' . $var . '%');
+            $query->where(function ($q) use ($request) {
+                foreach ($this->buildSearchVariations($request->search) as $term) {
+                    $q->orWhere('name',        'LIKE', "%{$term}%")
+                      ->orWhere('card_number', 'LIKE', "%{$term}%")
+                      ->orWhere('unique_id',   'LIKE', "%{$term}%");
                 }
             });
         }
-        // El filtro por Expansión (Set)
-        if ($request->filled('card_set_id')) {
-            $query->where('card_set_id', $request->card_set_id);
-        }
 
-        // 🚀 NUEVO: El filtro por Juego (Buscando a través del Set)
-        if ($request->filled('game_id')) {
-            $query->whereHas('cardSet', function($q) use ($request) {
-                $q->where('game_id', $request->game_id);
-            });
-        }
+        // ── Filtros opcionales ────────────────────────────────────────────────
+        $query->when($request->filled('card_set_id'), fn($q) =>
+            $q->where('card_set_id', $request->card_set_id)
+        );
 
-        if ($request->search === 'p103') {
-            return response()->json([
-                '1_sql_real' => $query->toSql(),
-                '2_parametros_inyectados' => $query->getBindings(),
-                '3_prueba_directa_bd' => \App\Models\CardTemplate::where('card_number', 'LIKE', '%103%')->get(['id', 'name', 'card_number', 'unique_id', 'card_set_id'])
-            ]);
-        }
-        
-        $cards = $query->paginate(15);
+        $query->when($request->filled('game_id'), fn($q) =>
+            $q->whereHas('cardSet', fn($s) => $s->where('game_id', $request->game_id))
+        );
 
-        // --- TRUCO DE INFRAESTRUCTURA: OPTIMIZACIÓN EN LOTE ---
-        $user = $request->user('sanctum');
-        $ownedQuantities = [];
+        // ── Paginación ────────────────────────────────────────────────────────
+        $perPage = min((int) $request->input('per_page', 15), 100); // máximo 100
+        $cards   = $query->paginate($perPage);
 
-        if ($user) {
-            $cardIdsInPage = $cards->pluck('id')->toArray();
+        // ── Cantidades poseídas en una sola query (optimización en lote) ──────
+        $ownedQuantities = $this->getOwnedQuantities($request, $cards->pluck('id')->all());
 
-            $ownedQuantities = $user->userCards()
-                ->whereIn('card_template_id', $cardIdsInPage)
-                ->select('card_template_id', \DB::raw('SUM(quantity) as total_quantity'))
-                ->groupBy('card_template_id')
-                ->pluck('total_quantity', 'card_template_id')
-                ->toArray(); 
-        }
-
-        // 3. Cruzamos los datos y extraemos la info
+        // ── Transformar cada carta ────────────────────────────────────────────
         $cards->getCollection()->transform(function ($card) use ($ownedQuantities) {
-            $card->set_name = $card->cardSet ? $card->cardSet->name : 'Unknown';
-            $card->set_total = $card->cardSet ? $card->cardSet->total_cards : 0;
-            $card->owned_copies = $ownedQuantities[$card->id] ?? 0;
-            
-            // 🚀 NUEVO: Extraemos el precio en Euros
-            // (Asumimos que puede haber varios precios, cogemos el primero porque solo hemos guardado EUR)
-            $precio = $card->prices->first();
-            $card->market_price = $precio ? (float) $precio->price : null;
-            
+            $card->set_name     = $card->cardSet?->name        ?? 'Unknown';
+            $card->set_total    = $card->cardSet?->total_cards ?? 0;
+            $card->owned_copies = $ownedQuantities[$card->id]  ?? 0;
+            $card->market_price = $card->prices->first()?->price
+                ? (float) $card->prices->first()->price
+                : null;
+
+            // Limpiar relaciones que ya hemos "aplanado" para no inflar el JSON
+            unset($card->cardSet, $card->prices);
+
             return $card;
         });
 
         return response()->json($cards);
     }
 
-    // Ver el detalle de una carta específica
-    public function show($id)
+    /**
+     * Detalle de una carta concreta.
+     * GET /api/cards/{id}
+     */
+    public function show(int $id): JsonResponse
     {
-        $card = CardTemplate::findOrFail($id);
-        return response()->json($card);
+        $card = CardTemplate::with(['cardSet', 'prices'])->findOrFail($id);
+
+        return response()->json([
+            'id'           => $card->id,
+            'name'         => $card->name,
+            'card_number'  => $card->card_number,
+            'unique_id'    => $card->unique_id,
+            'image_url'    => $card->image_url,
+            'attributes'   => $card->attributes,
+            'set_name'     => $card->cardSet?->name        ?? 'Unknown',
+            'set_code'     => $card->cardSet?->code        ?? null,
+            'set_total'    => $card->cardSet?->total_cards ?? 0,
+            'market_price' => $card->prices->first()?->price
+                ? (float) $card->prices->first()->price
+                : null,
+        ]);
+    }
+
+    // ─── Helpers privados ──────────────────────────────────────────────────────
+
+    /**
+     * Construye variaciones del término de búsqueda para cubrir formatos
+     * como "op01001" → "OP01-001" o "p103" → "p-103".
+     */
+    private function buildSearchVariations(string $input): array
+    {
+        $clean = str_replace(['-', ' ', '–'], '', $input);
+
+        $variations = [$input, $clean];
+
+        // "p103" → "p-103"
+        if (preg_match('/^([a-zA-Z]+)(\d+)$/', $clean, $m)) {
+            $variations[] = $m[1] . '-' . $m[2];
+        }
+
+        // "op01001" → "op01-001"
+        if (preg_match('/^([a-zA-Z]+\d+)(\d{3,4})$/', $clean, $m)) {
+            $variations[] = $m[1] . '-' . $m[2];
+        }
+
+        return array_unique($variations);
+    }
+
+    /**
+     * Devuelve un mapa [card_template_id => total_quantity] para los IDs dados.
+     * Una sola query para todos los IDs de la página.
+     */
+    private function getOwnedQuantities(Request $request, array $cardIds): array
+    {
+        $user = $request->user('sanctum');
+
+        if (!$user || empty($cardIds)) return [];
+
+        return $user->userCards()
+            ->whereIn('card_template_id', $cardIds)
+            ->select('card_template_id', DB::raw('SUM(quantity) as total_quantity'))
+            ->groupBy('card_template_id')
+            ->pluck('total_quantity', 'card_template_id')
+            ->toArray();
     }
 }

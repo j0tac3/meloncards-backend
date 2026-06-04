@@ -9,70 +9,53 @@ use App\Http\Controllers\GameController;
 use App\Http\Controllers\PriceController;
 use App\Http\Controllers\ChecklistController;
 use App\Http\Controllers\WishlistController;
-use Illuminate\Support\Facades\Artisan;
+use App\Http\Controllers\SetController;
 
-// --- RUTAS PÚBLICAS ---
+// ═══════════════════════════════════════════════════════════════════
+// RUTAS PÚBLICAS
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Auth ──────────────────────────────────────────────────────────
 Route::post('/register', [AuthController::class, 'register']);
-Route::post('/login', [AuthController::class, 'login']);
+Route::post('/login',    [AuthController::class, 'login']);
 
-// Catálogo de cartas (Cualquiera puede buscar cartas)
-Route::get('/cards', [CardCatalogController::class, 'index']);
+// ── Catálogo (lectura pública, el auth es opcional dentro del controller) ──
+Route::get('/cards',      [CardCatalogController::class, 'index']);
 Route::get('/cards/{id}', [CardCatalogController::class, 'show']);
 
-// Rutas públicas para los juegos y sus regiones
-Route::get('/games', [GameController::class, 'index']);
+// ── Juegos y Sets ─────────────────────────────────────────────────
+Route::get('/games',       [GameController::class, 'index']);
 Route::get('/games/{slug}', [GameController::class, 'show']);
+Route::get('/sets',        [SetController::class, 'index']);
 
+// ── Extras públicos ───────────────────────────────────────────────
+Route::get('/card-states', fn() => response()->json(\App\Models\CardState::all()));
 Route::get('/sets/{code}/checklist/pdf', [ChecklistController::class, 'downloadPdf']);
 
-// routes/api.php
+// ═══════════════════════════════════════════════════════════════════
+// RUTAS PROTEGIDAS (requieren token Sanctum)
+// ═══════════════════════════════════════════════════════════════════
 
-Route::get('/sets', function (Request $request) {
-    $query = \App\Models\CardSet::where('total_cards', '>', 0)
-                                ->whereNotNull('family')
-                                ->orderBy('release_date', 'desc');
-
-    if ($request->filled('game_id')) {
-        $query->where('game_id', $request->game_id);
-    }
-    
-    $region = $request->input('region', 'en'); 
-    $query->where('region', $region);
-    
-    // 🚀 NUEVO: Modificamos los resultados antes de enviarlos
-    $sets = $query->get()->map(function ($set) {
-        // Si la imagen es local (empieza por /storage), le ponemos el dominio completo de Laravel
-        if ($set->image_url && str_starts_with($set->image_url, '/storage')) {
-            $set->image_url = url($set->image_url);
-        }
-        return $set;
-    });
-    
-    return response()->json($sets);
-});
-
-// Rutas Públicas...
-Route::get('/card-states', function () {
-    return response()->json(\App\Models\CardState::all());
-});
-
-
-// --- RUTAS PROTEGIDAS (Requieren Token Sanctum) ---
 Route::middleware('auth:sanctum')->group(function () {
-    
-    // Ver datos del usuario
-    Route::get('/user', function (Request $request) {
-        return $request->user();
+
+    // ── Usuario ───────────────────────────────────────────────────
+    Route::get('/user', fn(Request $request) => $request->user());
+
+    // ── Colección ─────────────────────────────────────────────────
+    Route::prefix('collection')->group(function () {
+        Route::get('/',                         [CollectionController::class, 'index']);
+        Route::post('/',                        [CollectionController::class, 'store']);
+        Route::get('/check/{templateId}',       [CollectionController::class, 'checkOwned']);
+        Route::get('/count/{cardId}',           [CollectionController::class, 'getOwnedCount']);
+        Route::patch('/{id}/quantity',          [CollectionController::class, 'updateQuantity']);
+        Route::delete('/{id}',                  [CollectionController::class, 'destroy']);
+        Route::post('/{id}/favorite',    [CollectionController::class, 'toggleFavorite']);
     });
 
-    // Gestión de la Colección Física
-    Route::get('/collection', [CollectionController::class, 'index']);
-    Route::post('/collection', [CollectionController::class, 'store']);
-    Route::get('/collection/check/{templateId}', [CollectionController::class, 'checkOwned']);
-    Route::delete('/collection/{id}', [CollectionController::class, 'destroy']);
-    Route::get('/collection/count/{cardId}', [CollectionController::class, 'getOwnedCount']);
-
+    // ── Precios ───────────────────────────────────────────────────
     Route::get('/prices/{card_id}', [PriceController::class, 'show']);
-    Route::post('/wishlist/toggle', [WishlistController::class, 'toggle']);
-    Route::get('/wishlist', [WishlistController::class, 'index']);
+
+    // ── Wishlist ──────────────────────────────────────────────────
+    Route::get('/wishlist',          [WishlistController::class, 'index']);
+    Route::post('/wishlist/toggle',  [WishlistController::class, 'toggle']);
 });

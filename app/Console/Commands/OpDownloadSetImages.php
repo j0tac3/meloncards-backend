@@ -3,75 +3,126 @@
 namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
-use App\Models\CardSet;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use Illuminate\Support\Facades\Process; // 🚀 Necesario para ejecutar Node.js
+use App\Models\CardSet;
 
 class OpDownloadSetImages extends Command
 {
-    protected $signature = 'op:download-set-images';
-    protected $description = 'Descarga las imágenes de Bandai, las recorta y las guarda en el servidor local';
+    protected $signature   = 'op:download-set-images
+                                {--force : Redownload images already on local server}';
+    protected $description = 'Descarga imágenes de sets, las recorta y las guarda en el servidor local';
 
-    public function handle()
+    public function handle(): int
     {
-        $this->info('🖼 Iniciando descarga y recorte de carátulas...');
+        $this->info('🖼  Iniciando descarga y recorte de carátulas...');
 
-        // Buscamos solo los sets cuya URL empiece por "http" (es decir, las de Bandai). 
-        // Si ya las hemos descargado, empezarán por "/storage/...", así que las ignorará y ahorramos tiempo.
-        $sets = CardSet::where('image_url', 'like', 'http%')->get();
+        $query = CardSet::query();
+
+        // Sin --force: solo las que aún apuntan a URLs externas
+        if (!$this->option('force')) {
+            $query->where('image_url', 'like', 'http%');
+        }
+
+        $sets = $query->get();
 
         if ($sets->isEmpty()) {
             $this->info('✅ No hay imágenes nuevas que descargar. Todo está al día.');
-            return;
+            return self::SUCCESS;
         }
 
-        $bar = $this->output->createProgressBar(count($sets));
+        // ── Verificar que storage:link ya existe (no llamarlo en cada ejecución) ──
+        $linkPath = public_path('storage');
+        if (!file_exists($linkPath)) {
+            $this->call('storage:link');
+        }
+
+        $bar      = $this->output->createProgressBar($sets->count());
+        $errores  = 0;
+        $ok       = 0;
         $bar->start();
 
         foreach ($sets as $set) {
             try {
-                // Descargamos la imagen de Bandai
-                $imageContents = Http::get($set->image_url)->body();
+                $result = $this->processSetImage($set);
 
-                // Creamos un nombre limpio (ej: op-15_en.webp)
-                $extension = pathinfo(parse_url($set->image_url, PHP_URL_PATH), PATHINFO_EXTENSION) ?: 'webp';
-                $cleanCode = Str::slug($set->code); // Convierte "OP-15" en "op-15"
-                $filename = "{$cleanCode}_{$set->region}.{$extension}";
-
-                // La guardamos físicamente en storage/app/public/sets/
-                Storage::disk('public')->put("sets/{$filename}", $imageContents);
-
-                // 🚀 EXTRAEMOS LA RUTA ABSOLUTA Y LLAMAMOS A NODE.JS
-                $rutaAbsoluta = Storage::disk('public')->path("sets/{$filename}");
-                $resultado = Process::run("node app/Console/Commands/auto-recortar.js \"{$rutaAbsoluta}\"");
-
-                // Verificamos si Node tiró algún error para registrarlo, pero el proceso sigue
-                if (!$resultado->successful()) {
-                    $this->error("\n⚠️ Advertencia: No se pudo recortar [{$set->code}] de forma automática: " . $resultado->errorOutput());
+                if ($result) {
+                    $ok++;
+                } else {
+                    $errores++;
                 }
 
-                // Actualizamos la base de datos para que apunte a NUESTRO servidor
-                $set->update([
-                    'image_url' => "/storage/sets/{$filename}"
+            } catch (\Throwable $e) {
+                $errores++;
+                $this->newLine();
+                $this->error("❌ Error en [{$set->code}]: " . $e->getMessage());
+                Log::error('op:download-set-images failed', [
+                    'set_code' => $set->code,
+                    'error'    => $e->getMessage(),
                 ]);
-
-                // Pausa de 1 segundo para no saturar al servidor de Bandai y que no nos bloquee
-                sleep(1); 
-
-            } catch (\Exception $e) {
-                $this->error("\n❌ Error descargando [{$set->code}]: " . $e->getMessage());
             }
 
             $bar->advance();
+
+            // Pausa para no saturar el servidor de origen
+            sleep(1);
         }
 
         $bar->finish();
-        
-        // Comando mágico de Laravel para que las imágenes sean públicas en la web
-        $this->call('storage:link'); 
-        
-        $this->info("\n✨ ¡Todas las imágenes han sido descargadas y recortadas en tu servidor de forma segura!");
+        $this->newLine(2);
+        $this->info("✨ Completado. Descargadas: {$ok} | Errores: {$errores}");
+
+        return $errores > 0 ? self::FAILURE : self::SUCCESS;
+    }
+
+    // ─── Helpers ──────────────────────────────────────────────────────────────
+
+    private function processSetImage(CardSet $set): bool
+    {
+        $imageUrl = $set->image_url;
+
+        // Construir nombre de archivo limpio
+        $extension = pathinfo(parse_url($imageUrl, PHP_URL_PATH), PATHINFO_EXTENSION) ?: 'webp';
+        $cleanCode = Str::slug($set->code);
+        $filename  = "{$cleanCode}_{$set->region}.{$extension}";
+        $storagePath = "sets/{$filename}";
+
+        // Descargar imagen con reintentos
+        $imageContents = Http::retry(3, 2000)
+            ->timeout(30)
+            ->get($imageUrl)
+            ->throw() // Lanza excepción si status >= 400
+            ->body();
+
+        // Guardar en storage/app/public/sets/
+        Storage::disk('public')->put($storagePath, $imageContents);
+
+        // Recortar con Node.js (auto-recortar.js)
+        $absolutePath = Storage::disk('public')->path($storagePath);
+        $nodePath     = config('scraper.node_script_path')
+            ? dirname(config('scraper.node_script_path')) . '/auto-recortar.js'
+            : base_path('../cardmarket-scraper/auto-recortar.js');
+
+        $resultado = Process::timeout(30)->run(
+            "node " . escapeshellarg($nodePath) . " " . escapeshellarg($absolutePath)
+        );
+
+        if (!$resultado->successful()) {
+            // El recorte es opcional: logamos la advertencia pero no falla el proceso
+            $this->newLine();
+            $this->warn("⚠️  No se pudo recortar [{$set->code}]: " . $resultado->errorOutput());
+            Log::warning('auto-recortar failed', [
+                'set_code' => $set->code,
+                'output'   => $resultado->errorOutput(),
+            ]);
+        }
+
+        // Actualizar BD con la ruta local
+        $set->update(['image_url' => "/storage/{$storagePath}"]);
+
+        return true;
     }
 }

@@ -8,130 +8,186 @@ use Symfony\Component\DomCrawler\Crawler;
 use App\Models\CardTemplate;
 use App\Models\CardPrice;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\File;
 
 class OpScrapePricesCm extends Command
 {
-    // Ya no hace falta el --limit, porque vamos a escanear solo una página de la expansión
-    protected $signature = 'op:scrape-prices-cm';
-    protected $description = 'Extrae precios de una expansión entera en Cardmarket (Estrategia de Infiltración)';
+    protected $signature   = 'op:scrape-prices-cm
+                                {set? : Slug de la expansión en Cardmarket (ej: Romance-Dawn)}
+                                {--game=OnePiece : Juego (OnePiece, Pokemon, etc.)}
+                                {--pages=1 : Número máximo de páginas a raspar}';
+    protected $description = 'Extrae precios de una expansión entera en Cardmarket';
 
-    public function handle()
+    // ── Detectar Chrome automáticamente (igual que en OpScrapeCards) ──────────
+    private function getChromePath(): ?string
     {
-        $this->info("🥷 Iniciando infiltración: Accediendo al catálogo de 'Romance Dawn'...");
+        $paths = [
+            '/usr/bin/google-chrome',
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
+            '/snap/bin/chromium',
+            // Windows (dev local) — solo como último recurso
+            'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        ];
 
-        // URL directa de la primera página de la expansión Romance Dawn en Cardmarket
-        $url = "https://www.cardmarket.com/en/OnePiece/Products/Singles/Romance-Dawn";
+        foreach ($paths as $path) {
+            if (file_exists($path)) return $path;
+        }
+        return null;
+    }
 
-        try {
-            $this->line("   Navegando de incógnito a: {$url}");
+    public function handle(): int
+    {
+        $setSlug   = $this->argument('set') ?? 'Romance-Dawn';
+        $game      = $this->option('game');
+        $maxPages  = (int) $this->option('pages');
+        $chromePath = $this->getChromePath();
 
-            // Navegamos simulando un Chrome real
-            // 👻 NAVEGACIÓN STEALTH (Bypass de Cloudflare)
-            $browser = Browsershot::url($url)
-                ->setChromePath('C:\Program Files\Google\Chrome\Application\chrome.exe')
-                ->windowSize(1920, 1080)
-                ->userAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
-                // 1. Cabeceras súper realistas
-                ->setExtraHttpHeaders([
-                    'Accept-Language' => 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                    'Upgrade-Insecure-Requests' => '1'
-                ])
-                // 2. Apagamos los chivatos de automatización (El antídoto)
-                ->addBrowserArgs([
-                    '--disable-blink-features=AutomationControlled', // Oculta el navigator.webdriver
-                    '--disable-infobars',
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--ignore-certificate-errors',
-                    '--lang=es-ES,es,en'
-                ])
-                ->waitUntilNetworkIdle()
-                ->timeout(60);
+        if ($chromePath) {
+            $this->line("⚙️  Chrome detectado en: {$chromePath}");
+        }
 
-            // 📸 Guardamos captura y HTML por si necesitamos hacer autopsia del muro de seguridad
-            //$browser->save(storage_path("app/debug_expansion.png"));
-            $html = $browser->bodyHtml();
-            File::put(storage_path('app/debug_expansion.html'), $html);
+        $this->info("🥷 Iniciando infiltración en Cardmarket → {$game}/{$setSlug}...");
+
+        // Pre-cargar mapa card_number → id en memoria (evita N queries en el bucle)
+        $cardMap = CardTemplate::pluck('id', 'card_number')->toArray();
+        $this->line("🧠 " . count($cardMap) . " cartas cargadas en memoria.");
+
+        $guardadas  = 0;
+        $errores    = 0;
+        $priceBatch = []; // acumulador para upsert en lote
+
+        for ($page = 1; $page <= $maxPages; $page++) {
+            $url = "https://www.cardmarket.com/en/{$game}/Products/Singles/{$setSlug}?site={$page}";
+            $this->line("📄 Página {$page}: {$url}");
+
+            $html = $this->fetchPage($url, $chromePath);
+
+            if ($html === null) {
+                $this->error("❌ No se pudo obtener la página {$page}. Abortando.");
+                break;
+            }
+
+            // Debug: guardar HTML solo en entorno local
+            if (app()->isLocal()) {
+                File::put(storage_path("app/debug_cm_p{$page}.html"), $html);
+            }
 
             $crawler = new Crawler($html);
+            $filas   = $crawler->filter('.table-body .row');
 
-            // En las tablas de Cardmarket, cada fila es un div con la clase 'row' dentro de 'table-body'
-            $filas = $crawler->filter('.table-body .row');
-
-            $totalEncontrado = $filas->count();
-            
-            if ($totalEncontrado === 0) {
-                $this->error("\n❌ No se detectaron cartas. Cloudflare nos ha cerrado la puerta.");
-                $this->line("Revisa la imagen 'debug_expansion.png' en storage/app/ para ver qué pantalla nos ha saltado.");
-                return;
+            if ($filas->count() === 0) {
+                $this->warn("⚠️  Sin resultados en página {$page}. Cloudflare o fin de lista.");
+                break;
             }
 
-            $this->info("\n✅ Muro superado. Se han encontrado {$totalEncontrado} resultados en la página. Extrayendo datos...\n");
+            $this->line("   ✅ {$filas->count()} filas encontradas.");
 
-            $guardadas = 0;
-
-            // Recorremos cada fila de la lista
-            foreach ($filas as $nodo) {
-                $item = new Crawler($nodo);
-                
+            $filas->each(function (Crawler $item) use (&$priceBatch, &$errores, $cardMap) {
                 try {
-                    // Extraemos el nombre que incluye el código, Ej: "Roronoa Zoro (OP01-001)" o "Krieg (OP01-066)"
-                    $nombreTag = $item->filter('.col-10.col-md-8 a');
-                    if ($nombreTag->count() === 0) continue; // Si no hay enlace, no es una carta (puede ser la cabecera de la tabla)
-                    
-                    $nombreCompleto = $nombreTag->text();
-                    
-                    // Extraemos el precio, Ej: "12,50 €"
-                    $precioTag = $item->filter('.col-price');
-                    if ($precioTag->count() === 0) continue;
+                    $linkTag = $item->filter('.col-10.col-md-8 a, .col-sellers-offers a');
+                    if ($linkTag->count() === 0) return;
 
-                    $precioTexto = $precioTag->text();
-                    
-                    // 🧠 MAGIA REGEX: Buscamos cualquier cosa que esté entre paréntesis, ej: OP01-001
-                    preg_match('/\((.*?)\)/', $nombreCompleto, $matches);
-                    $cardNumber = $matches[1] ?? null;
+                    $nombreCompleto = trim($linkTag->text());
 
-                    if ($cardNumber) {
-                        // Limpiamos la moneda y lo pasamos a decimal de PHP
-                        $cleanPrice = preg_replace('/[^0-9,]/', '', $precioTexto);
-                        $cleanPrice = str_replace(',', '.', $cleanPrice);
-                        $priceValue = (float) $cleanPrice;
+                    // Extraer código de carta entre paréntesis: (OP01-001)
+                    if (!preg_match('/\(([A-Z0-9\-]+)\)/i', $nombreCompleto, $m)) return;
+                    $cardNumber = $m[1];
 
-                        // Buscamos la carta en tu base de datos local
-                        $card = CardTemplate::where('card_number', $cardNumber)->first();
+                    // Precio: buscar el primer elemento con clase price
+                    $precioTag = $item->filter('.col-price, .price-container');
+                    if ($precioTag->count() === 0) return;
 
-                        if ($card && $priceValue > 0) {
-                            // GUARDADO SEGURO MULTI-MERCADO
-                            DB::beginTransaction();
-                            CardPrice::updateOrCreate(
-                                [
-                                    'card_template_id' => $card->id,
-                                    'currency' => 'EUR',
-                                    'provider' => 'cardmarket',
-                                ],
-                                [
-                                    'price' => $priceValue,
-                                    'updated_at' => now(),
-                                ]
-                            );
-                            DB::commit();
-                            
-                            $this->line("   💶 Guardado: {$cardNumber} -> {$priceValue} €");
-                            $guardadas++;
-                        }
-                    }
-                } catch (\Exception $e) {
-                    // Si una fila falla (publicidad, etc.), pasamos a la siguiente en silencio
+                    $cleanPrice = preg_replace('/[^0-9,]/', '', $precioTag->first()->text());
+                    $priceValue = (float) str_replace(',', '.', $cleanPrice);
+
+                    if ($priceValue <= 0 || !isset($cardMap[$cardNumber])) return;
+
+                    // Acumular para upsert en lote
+                    $priceBatch[] = [
+                        'card_template_id' => $cardMap[$cardNumber],
+                        'currency'         => 'EUR',
+                        'provider'         => 'cardmarket',
+                        'price'            => $priceValue,
+                        'updated_at'       => now(),
+                        'created_at'       => now(),
+                    ];
+
+                } catch (\Throwable $e) {
+                    $errores++;
+                    Log::warning('op:scrape-prices-cm row parse error', ['error' => $e->getMessage()]);
                 }
-            }
+            });
 
-            $this->newLine();
-            $this->info("🎉 ¡Infiltración completada! Se han guardado los precios exactos de {$guardadas} cartas de Romance Dawn.");
-
-        } catch (\Exception $e) {
-            $this->error("\n⚠️ Error crítico de conexión: " . $e->getMessage());
+            // Pausa entre páginas para no activar rate-limits
+            if ($page < $maxPages) sleep(rand(2, 4));
         }
+
+        // ── Upsert del lote completo en UNA sola transacción ─────────────────
+        if (!empty($priceBatch)) {
+            DB::beginTransaction();
+            try {
+                // Lotes de 200 para no superar límite de placeholders de MySQL
+                foreach (array_chunk($priceBatch, 200) as $chunk) {
+                    CardPrice::upsert(
+                        $chunk,
+                        ['card_template_id', 'currency', 'provider'],
+                        ['price', 'updated_at']
+                    );
+                    $guardadas += count($chunk);
+                }
+                DB::commit();
+            } catch (\Throwable $e) {
+                DB::rollBack();
+                $this->error('❌ Error al guardar precios. Rollback ejecutado.');
+                $this->error($e->getMessage());
+                Log::error('op:scrape-prices-cm upsert failed', ['exception' => $e]);
+                return self::FAILURE;
+            }
+        }
+
+        $this->newLine();
+        $this->info("🎉 Completado. Precios guardados: {$guardadas} | Errores de parseo: {$errores}");
+        return self::SUCCESS;
+    }
+
+    // ─── Helpers ──────────────────────────────────────────────────────────────
+
+    private function fetchPage(string $url, ?string $chromePath): ?string
+    {
+        $maxRetries = 3;
+
+        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+            try {
+                $browser = Browsershot::url($url)
+                    ->noSandbox()
+                    ->windowSize(1920, 1080)
+                    ->userAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+                    ->setExtraHttpHeaders([
+                        'Accept-Language'           => 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
+                        'Accept'                    => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Upgrade-Insecure-Requests' => '1',
+                    ])
+                    ->addBrowserArgs([
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-infobars',
+                        '--ignore-certificate-errors',
+                        '--lang=es-ES,es,en',
+                    ])
+                    ->waitUntilNetworkIdle()
+                    ->timeout(60);
+
+                if ($chromePath) $browser->setChromePath($chromePath);
+
+                return $browser->bodyHtml();
+
+            } catch (\Throwable $e) {
+                $this->warn("⚠️  Intento {$attempt}/{$maxRetries} fallido: " . $e->getMessage());
+                if ($attempt < $maxRetries) sleep(5);
+            }
+        }
+
+        return null;
     }
 }

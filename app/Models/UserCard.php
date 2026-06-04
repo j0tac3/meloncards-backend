@@ -13,13 +13,18 @@ class UserCard extends Model
     protected $fillable = [
         'user_id',
         'card_template_id',
-        'card_state_id', // <-- 1. AÑADE ESTO
+        'card_state_id',
         'language',
         'is_foil',
         'quantity',
+        'is_favorite'
     ];
 
-    // ... (Tus relaciones se quedan igual) ...
+    protected $casts = [
+        'is_foil' => 'boolean',
+        'is_favorite' => 'boolean',
+    ];
+
     public function user() {
         return $this->belongsTo(User::class);
     }
@@ -28,7 +33,6 @@ class UserCard extends Model
         return $this->belongsTo(CardTemplate::class);
     }
     
-    // Y no olvides añadir la relación hacia el estado si no la tenías
     public function cardState() {
         return $this->belongsTo(CardState::class);
     }
