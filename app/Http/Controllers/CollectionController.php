@@ -218,17 +218,226 @@ class CollectionController extends Controller
         return round((float) $total, 2);
     }
 
-    // NUEVO: Alternar el estado de Favorito
-    public function toggleFavorite(Request $request, $id)
+    /**
+     * Obtiene las expansiones (sets) del usuario paginadas para el modo "Escaparate".
+     * GET /api/collection/dashboard-sets
+     */
+    public function dashboardSets(Request $request): \Illuminate\Http\JsonResponse
     {
-        $userCard = $request->user()->userCards()->findOrFail($id);
-        
-        $userCard->is_favorite = !$userCard->is_favorite;
-        $userCard->save();
+        $gameId = $request->query('game_id');
+        $user = $request->user();
+        $perPage = 5;
+
+        // 1. Obtenemos las expansiones y leemos directamente el 'total_cards' de tu tabla
+        $paginatedSets = \DB::table('user_cards')
+            ->join('card_templates', 'user_cards.card_template_id', '=', 'card_templates.id')
+            ->join('card_sets', 'card_templates.card_set_id', '=', 'card_sets.id')
+            ->where('user_cards.user_id', $user->id)
+            ->where('card_sets.game_id', $gameId)
+            ->select('card_sets.id as set_id', 'card_sets.name as set_name', 'card_sets.total_cards')
+            ->groupBy('card_sets.id', 'card_sets.name', 'card_sets.total_cards')
+            ->orderBy('card_sets.name')
+            ->paginate($perPage);
+
+        if ($paginatedSets->isEmpty()) {
+            return response()->json(['data' => [], 'stats' => null, 'has_more_pages' => false]);
+        }
+
+        $setIds = $paginatedSets->pluck('set_id');
+
+        // 2. Calculamos SOLO las cartas únicas que posee el usuario
+        $ownedUniquePerSet = \DB::table('user_cards')
+            ->join('card_templates', 'user_cards.card_template_id', '=', 'card_templates.id')
+            ->where('user_cards.user_id', $user->id)
+            ->whereIn('card_templates.card_set_id', $setIds)
+            ->select('card_templates.card_set_id', \DB::raw('count(distinct card_templates.id) as owned'))
+            ->groupBy('card_templates.card_set_id')
+            ->pluck('owned', 'card_set_id');
+
+        // 3. Montamos las Estanterías
+        $dashboardRows = [];
+
+        foreach ($paginatedSets as $set) {
+            $recentCards = $user->userCards()
+                ->with(['cardTemplate.cardSet', 'cardState'])
+                ->whereHas('cardTemplate', function ($q) use ($set) {
+                    $q->where('card_set_id', $set->set_id);
+                })
+                ->orderBy('created_at', 'desc')
+                ->take(10)
+                ->get()
+                ->map(function ($userCard) {
+                    return [
+                        'collection_id' => $userCard->id,
+                        'is_favorite' => $userCard->is_favorite,
+                        'quantity' => $userCard->quantity,
+                        'state' => $userCard->cardState->name ?? null,
+                        'name' => $userCard->cardTemplate->name,
+                        'image_url' => $userCard->cardTemplate->image_url,
+                        'set_name' => $userCard->cardTemplate->cardSet->name ?? 'Desconocido',
+                    ];
+                });
+
+            $dashboardRows[] = [
+                'set_id' => $set->set_id,
+                'set_name' => $set->set_name,
+                'owned_unique' => $ownedUniquePerSet[$set->set_id] ?? 0,
+                'total_in_set' => $set->total_cards ?? 0, // <-- Usamos tu columna directamente
+                'recent_cards' => $recentCards
+            ];
+        }
+
+        // 4. Calculamos los KPIs Globales (Solo en la página 1)
+        $stats = null;
+        if ($paginatedSets->currentPage() === 1) {
+            $baseQuery = $user->userCards()->whereHas('cardTemplate.cardSet', function ($q) use ($gameId) {
+                $q->where('game_id', $gameId);
+            });
+
+            $stats = [
+                'physical' => (clone $baseQuery)->sum('quantity'),
+                'unique' => (clone $baseQuery)->distinct('card_template_id')->count('card_template_id'),
+                'foil' => (clone $baseQuery)->where('is_foil', true)->sum('quantity'),
+                'vault' => (clone $baseQuery)->with('cardTemplate')->get()->sum(function($card) {
+                    return ($card->cardTemplate->market_price ?? 0) * $card->quantity; 
+                })
+            ];
+        }
 
         return response()->json([
-            'is_favorite' => $userCard->is_favorite,
-            'message' => $userCard->is_favorite ? 'Marcada como favorita' : 'Quitada de favoritas'
+            'data' => $dashboardRows,
+            'stats' => $stats,
+            'current_page' => $paginatedSets->currentPage(),
+            'last_page' => $paginatedSets->lastPage(),
+            'has_more_pages' => $paginatedSets->hasMorePages()
+        ]);
+    }
+
+    /**
+     * Busca cartas específicas en toda la colección del usuario (Modo Cuadrícula).
+     * GET /api/collection/search
+     */
+    public function searchCards(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $gameId = $request->query('game_id');
+        $searchTerm = $request->query('search');
+        $perPage = 30;
+
+        $query = $request->user()->userCards()
+            ->with(['cardTemplate.cardSet', 'cardState'])
+            ->whereHas('cardTemplate', function ($q) use ($gameId, $searchTerm) {
+                
+                // ✅ CORRECCIÓN 1: Filtramos por juego pasando a través de la tabla card_sets
+                $q->whereHas('cardSet', function ($qSet) use ($gameId) {
+                    $qSet->where('game_id', $gameId);
+                });
+                
+                // ✅ CORRECCIÓN 2: Aplicamos la búsqueda de texto
+                if (!empty($searchTerm)) {
+                    $q->where(function($subQ) use ($searchTerm) {
+                        $subQ->where('name', 'like', "%{$searchTerm}%")
+                             ->orWhere('card_number', 'like', "%{$searchTerm}%");
+                    });
+                }
+            })
+            ->orderBy('created_at', 'desc');
+
+        $paginatedCards = $query->paginate($perPage);
+
+        $formattedCards = $paginatedCards->map(function ($userCard) {
+            return [
+                'collection_id' => $userCard->id,
+                'is_favorite' => $userCard->is_favorite,
+                'quantity' => $userCard->quantity,
+                'state' => $userCard->cardState->name ?? null,
+                'name' => $userCard->cardTemplate->name,
+                'image_url' => $userCard->cardTemplate->image_url,
+                'set_name' => $userCard->cardTemplate->cardSet->name ?? 'Desconocido',
+                'market_price' => $userCard->cardTemplate->market_price ?? 0,
+            ];
+        });
+
+        return response()->json([
+            'data' => $formattedCards,
+            'current_page' => $paginatedCards->currentPage(),
+            'last_page' => $paginatedCards->lastPage(),
+            'has_more_pages' => $paginatedCards->hasMorePages()
+        ]);
+    }
+
+    /**
+     * Obtiene todas las cartas de un set específico en la colección del usuario.
+     * Permite búsqueda local por nombre o número dentro de ese set.
+     * GET /api/collection/set/{setId}
+     */
+    public function setCards(Request $request, int $setId): \Illuminate\Http\JsonResponse
+    {
+        $setId = (int) $setId; 
+
+        $user = $request->user();
+        $searchTerm = $request->query('search');
+        $perPage = 30; // 30 cartas por página para la cuadrícula masiva
+
+        // 1. Query base para las cartas del usuario estrictamente en este set
+        $query = $user->userCards()
+            ->with(['cardTemplate.cardSet', 'cardState'])
+            ->whereHas('cardTemplate', function ($q) use ($setId, $searchTerm) {
+                // Filtramos por el set exacto
+                $q->where('card_set_id', $setId);
+                
+                // Si el usuario usa el buscador de esta pantalla, filtramos
+                if (!empty($searchTerm)) {
+                    $q->where(function($subQ) use ($searchTerm) {
+                        $subQ->where('name', 'like', "%{$searchTerm}%")
+                             ->orWhere('card_number', 'like', "%{$searchTerm}%");
+                    });
+                }
+            })
+            ->orderBy('created_at', 'desc');
+
+        $paginatedCards = $query->paginate($perPage);
+
+        // 2. Formateamos las cartas igual que en el resto de la app
+        $formattedCards = $paginatedCards->map(function ($userCard) {
+            return [
+                'collection_id' => $userCard->id,
+                'is_favorite' => $userCard->is_favorite,
+                'quantity' => $userCard->quantity,
+                'state' => $userCard->cardState->name ?? null,
+                'name' => $userCard->cardTemplate->name,
+                'image_url' => $userCard->cardTemplate->image_url,
+                'set_name' => $userCard->cardTemplate->cardSet->name ?? 'Desconocido',
+                'market_price' => $userCard->cardTemplate->market_price ?? 0,
+            ];
+        });
+
+        // 3. Extra: Si es la primera página, mandamos la info del Set para la cabecera
+        $setInfo = null;
+        if ($paginatedCards->currentPage() === 1) {
+            $set = \DB::table('card_sets')->where('id', $setId)->first();
+            
+            $ownedUnique = \DB::table('user_cards')
+                ->join('card_templates', 'user_cards.card_template_id', '=', 'card_templates.id')
+                ->where('user_cards.user_id', $user->id)
+                ->where('card_templates.card_set_id', $setId)
+                ->distinct('card_templates.id')
+                ->count('card_templates.id');
+
+            if ($set) {
+                $setInfo = [
+                    'name' => $set->name,
+                    'total_cards' => $set->total_cards,
+                    'owned_unique' => $ownedUnique
+                ];
+            }
+        }
+
+        return response()->json([
+            'data' => $formattedCards,
+            'set_info' => $setInfo,
+            'current_page' => $paginatedCards->currentPage(),
+            'last_page' => $paginatedCards->lastPage(),
+            'has_more_pages' => $paginatedCards->hasMorePages()
         ]);
     }
 }

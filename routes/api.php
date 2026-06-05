@@ -43,13 +43,16 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ── Colección ─────────────────────────────────────────────────
     Route::prefix('collection')->group(function () {
-        Route::get('/',                         [CollectionController::class, 'index']);
-        Route::post('/',                        [CollectionController::class, 'store']);
-        Route::get('/check/{templateId}',       [CollectionController::class, 'checkOwned']);
-        Route::get('/count/{cardId}',           [CollectionController::class, 'getOwnedCount']);
-        Route::patch('/{id}/quantity',          [CollectionController::class, 'updateQuantity']);
-        Route::delete('/{id}',                  [CollectionController::class, 'destroy']);
-        Route::post('/{id}/favorite',    [CollectionController::class, 'toggleFavorite']);
+        Route::get('/',                     [CollectionController::class, 'index']);
+        Route::post('/',                    [CollectionController::class, 'store']);
+        Route::get('/check/{templateId}',   [CollectionController::class, 'checkOwned']);
+        Route::get('/count/{cardId}',       [CollectionController::class, 'getOwnedCount']);
+        Route::patch('/{id}/quantity',      [CollectionController::class, 'updateQuantity']);
+        Route::delete('/{id}',              [CollectionController::class, 'destroy']);
+        Route::post('/{id}/favorite',       [CollectionController::class, 'toggleFavorite']);
+        Route::get('/dashboard-sets',       [CollectionController::class, 'dashboardSets']);
+        Route::get('/search',               [CollectionController::class, 'searchCards']);
+        Route::get('/set/{setId}',          [CollectionController::class, 'setCards']);
     });
 
     // ── Precios ───────────────────────────────────────────────────
