@@ -248,6 +248,7 @@ class CollectionController extends Controller
         // 2. Calculamos SOLO las cartas únicas que posee el usuario
         $ownedUniquePerSet = \DB::table('user_cards')
             ->join('card_templates', 'user_cards.card_template_id', '=', 'card_templates.id')
+            ->join('card_prices', 'user_cards.card_template_id', '=', 'card_prices.card_template_id')
             ->where('user_cards.user_id', $user->id)
             ->whereIn('card_templates.card_set_id', $setIds)
             ->select('card_templates.card_set_id', \DB::raw('count(distinct card_templates.id) as owned'))
@@ -259,7 +260,7 @@ class CollectionController extends Controller
 
         foreach ($paginatedSets as $set) {
             $recentCards = $user->userCards()
-                ->with(['cardTemplate.cardSet', 'cardState'])
+                ->with(['cardTemplate.cardSet', 'cardTemplate.prices', 'cardState'])
                 ->whereHas('cardTemplate', function ($q) use ($set) {
                     $q->where('card_set_id', $set->set_id);
                 })
@@ -267,14 +268,21 @@ class CollectionController extends Controller
                 ->take(10)
                 ->get()
                 ->map(function ($userCard) {
+                    $template = $userCard->cardTemplate;
+                    $precio   = $template->prices->first();
+
                     return [
                         'collection_id' => $userCard->id,
-                        'is_favorite' => $userCard->is_favorite,
-                        'quantity' => $userCard->quantity,
-                        'state' => $userCard->cardState->name ?? null,
-                        'name' => $userCard->cardTemplate->name,
-                        'image_url' => $userCard->cardTemplate->image_url,
-                        'set_name' => $userCard->cardTemplate->cardSet->name ?? 'Desconocido',
+                        'id'            => $template->id,
+                        'is_favorite'   => (bool) $userCard->is_favorite,
+                        'quantity'      => (int) $userCard->quantity,
+                        'state'         => $userCard->cardState?->name,
+                        'name'          => $template->name,
+                        'card_number'   => $template->card_number,
+                        'unique_id'     => $template->unique_id,
+                        'image_url'     => $template->image_url,
+                        'set_name'      => $template->cardSet?->name ?? 'Desconocido',
+                        'market_price'  => $precio ? (float) $precio->price : null,
                     ];
                 });
 
@@ -298,9 +306,14 @@ class CollectionController extends Controller
                 'physical' => (clone $baseQuery)->sum('quantity'),
                 'unique' => (clone $baseQuery)->distinct('card_template_id')->count('card_template_id'),
                 'foil' => (clone $baseQuery)->where('is_foil', true)->sum('quantity'),
-                'vault' => (clone $baseQuery)->with('cardTemplate')->get()->sum(function($card) {
-                    return ($card->cardTemplate->market_price ?? 0) * $card->quantity; 
-                })
+                'vault' => (float) \DB::table('user_cards')
+                        ->join('card_templates', 'card_templates.id', '=', 'user_cards.card_template_id')
+                        ->join('card_sets',      'card_sets.id',      '=', 'card_templates.card_set_id')
+                        ->join('card_prices',    'card_prices.card_template_id', '=', 'card_templates.id')
+                        ->where('user_cards.user_id', $user->id)
+                        ->where('card_sets.game_id', $gameId)
+                        ->where('card_prices.currency', 'EUR')
+                        ->sum(\DB::raw('user_cards.quantity * card_prices.price')),
             ];
         }
 
@@ -438,6 +451,28 @@ class CollectionController extends Controller
             'current_page' => $paginatedCards->currentPage(),
             'last_page' => $paginatedCards->lastPage(),
             'has_more_pages' => $paginatedCards->hasMorePages()
+        ]);
+    }
+
+    /**
+     * Alterna (toggle) el estado de favorito de una carta en la colección.
+     * POST /api/collection/{id}/favorite
+     */
+    public function toggleFavorite(Request $request, $id): \Illuminate\Http\JsonResponse
+    {
+        // 1. Obtenemos al usuario autenticado
+        $user = $request->user();
+        // 2. Buscamos la carta específica en su colección
+        // (Usamos userCards() para asegurarnos de que la carta realmente le pertenece a él)
+        $userCard = $user->userCards()->findOrFail($id);
+        // 3. Invertimos el valor actual (si era true pasa a false y viceversa)
+        $userCard->is_favorite = !$userCard->is_favorite;
+        // 4. Guardamos los cambios en la base de datos
+        $userCard->save();
+        // 5. Devolvemos la respuesta exacta que espera tu Angular
+        return response()->json([
+            'is_favorite' => $userCard->is_favorite,
+            'message' => $userCard->is_favorite ? 'Añadida a favoritos' : 'Eliminada de favoritos'
         ]);
     }
 }
