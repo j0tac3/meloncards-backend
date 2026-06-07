@@ -9,14 +9,14 @@ use Illuminate\Support\Facades\Http;
 class OpDownloadCardImages extends Command
 {
     protected $signature = 'op:download-card-images';
-    protected $description = 'Descarga imágenes con sistema Auto-Retry incorporado';
+    protected $description = 'Descarga imágenes en la carpeta public para ser servidas directamente';
 
     public function handle()
     {
-        $this->info('🚀 Iniciando el Gestor Universal de Descargas BLINDADO...');
+        $this->info('🚀 Iniciando el Gestor de Descargas (Directo a PUBLIC)...');
 
+        // Los JSON los leemos del disco 'local' (storage/app)
         $files = Storage::disk('local')->files();
-        $basePath = 'One_Piece_Collection';
 
         foreach ($files as $file) {
             if (preg_match('/^one_piece_(.+)\.json$/', $file, $matches)) {
@@ -24,33 +24,40 @@ class OpDownloadCardImages extends Command
                 $this->newLine();
                 $this->warn("🌍 Procesando Idioma: [ {$regionName} ]");
 
-                $cards = json_decode(Storage::disk('local')->get($file), true) ?? [];
+                // Leemos el JSON
+                $jsonContent = Storage::disk('local')->get($file);
+                $cards = json_decode($jsonContent, true) ?? [];
                 
                 foreach ($cards as $card) {
                     if (empty($card['image_url'])) continue;
 
+                    // Sacamos el ID del Set
                     $setCode = explode('-', $card['id'])[0] ?? 'PROMO';
                     $safeSetCode = trim(preg_replace('/[\\\\\/\:\*\?\"\<\>\|]/', '-', $setCode));
                     
-                    $imagesPath = "{$basePath}/{$safeSetCode}/{$regionName}/images";
-                    Storage::disk('local')->makeDirectory($imagesPath);
+                    // 🚀 RUTA BASE EN PUBLIC: storage/app/public/cards/OP01/en/
+                    $imagesPath = "cards/{$safeSetCode}/{$regionName}";
+                    Storage::disk('public')->makeDirectory($imagesPath);
 
                     $url = $card['image_url'];
                     $extension = pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION) ?: 'png';
                     $fileName = $card['id'] . '.' . $extension;
+                    
+                    // Ruta final del archivo
                     $imageFullPath = "{$imagesPath}/{$fileName}";
 
-                    if (!Storage::disk('local')->exists($imageFullPath)) {
+                    // Comprobamos si YA existe en el disco public
+                    if (!Storage::disk('public')->exists($imageFullPath)) {
                         try {
-                            // 🛡️ SISTEMA DE AUTO-REINTENTO (3 Strikes, 5s espera) nativo de Laravel
                             $response = Http::retry(3, 5000)
                                 ->withHeaders([
-                                    'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+                                    'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                                 ])->timeout(30)->get($url);
 
                             if ($response->successful()) {
-                                Storage::disk('local')->put($imageFullPath, $response->body());
-                                usleep(250000); // 250ms de pausa natural para no saturar
+                                // Guardamos en el disco public
+                                Storage::disk('public')->put($imageFullPath, $response->body());
+                                usleep(250000); // 250ms de pausa
                                 $this->line("      ⬇️ Descargada: {$fileName}");
                             } else {
                                 $this->error("      ❌ Fallo final al descargar {$fileName}");
@@ -64,6 +71,7 @@ class OpDownloadCardImages extends Command
             }
         }
         $this->newLine();
-        $this->info('🎉 ¡ÉXITO! Todas las descargas finalizadas con seguridad.');
+        $this->info('🎉 ¡ÉXITO! Todas las descargas finalizadas en la carpeta public.');
+        $this->warn('👉 IMPORTANTE: Ejecuta "php artisan storage:link" si no lo has hecho aún.');
     }
 }
