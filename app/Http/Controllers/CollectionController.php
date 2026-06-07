@@ -383,51 +383,81 @@ class CollectionController extends Controller
      * Permite búsqueda local por nombre o número dentro de ese set.
      * GET /api/collection/set/{setId}
      */
-    public function setCards(Request $request, int $setId): \Illuminate\Http\JsonResponse
+    public function setCards(Request $request, $setId): \Illuminate\Http\JsonResponse
     {
         $setId = (int) $setId; 
-
         $user = $request->user();
+        
         $searchTerm = $request->query('search');
-        $perPage = 30; // 30 cartas por página para la cuadrícula masiva
+        $sort = $request->query('sort', 'newest'); // <-- Recibimos el parámetro de orden
+        $perPage = 30;
 
-        // 1. Query base para las cartas del usuario estrictamente en este set
+        // 1. Usamos JOIN para poder ordenar por columnas de la carta y el precio
         $query = $user->userCards()
-            ->with(['cardTemplate.cardSet', 'cardState'])
-            ->whereHas('cardTemplate', function ($q) use ($setId, $searchTerm) {
-                // Filtramos por el set exacto
-                $q->where('card_set_id', $setId);
-                
-                // Si el usuario usa el buscador de esta pantalla, filtramos
-                if (!empty($searchTerm)) {
-                    $q->where(function($subQ) use ($searchTerm) {
-                        $subQ->where('name', 'like', "%{$searchTerm}%")
-                             ->orWhere('card_number', 'like', "%{$searchTerm}%");
-                    });
-                }
-            })
-            ->orderBy('created_at', 'desc');
+            ->select('user_cards.*') // Importante para no mezclar IDs
+            ->join('card_templates', 'user_cards.card_template_id', '=', 'card_templates.id')
+            ->with(['cardTemplate.cardSet', 'cardState', 'cardTemplate.prices'])
+            ->where('card_templates.card_set_id', $setId);
+
+        // Búsqueda
+        if (!empty($searchTerm)) {
+            $query->where(function($subQ) use ($searchTerm) {
+                $subQ->where('card_templates.name', 'like', "%{$searchTerm}%")
+                     ->orWhere('card_templates.card_number', 'like', "%{$searchTerm}%");
+            });
+        }
+
+        // LÓGICA DE ORDENACIÓN
+        switch ($sort) {
+            case 'number':
+                // Por orden de carta (ej. OP01-001, OP01-002...)
+                $query->orderBy('card_templates.card_number', 'asc');
+                break;
+            case 'price':
+                // Más valiosas primero (Subconsulta para coger el último precio registrado)
+                $query->orderByRaw('(SELECT price FROM card_prices WHERE card_prices.card_template_id = card_templates.id ORDER BY created_at DESC LIMIT 1) DESC');
+                break;
+            case 'newest':
+            default:
+                // Últimas agregadas a la colección
+                $query->orderBy('user_cards.created_at', 'desc');
+                break;
+        }
 
         $paginatedCards = $query->paginate($perPage);
 
-        // 2. Formateamos las cartas igual que en el resto de la app
+        // 2. Formateamos las cartas con TODOS los datos solicitados
         $formattedCards = $paginatedCards->map(function ($userCard) {
+            
+            // Cogemos el primer precio de la colección de forma segura. 
+            // Usamos optional() por si la carta aún no tiene ningún precio registrado.
+            // Ordenamos por fecha descendente para coger el precio más reciente, y usamos la columna 'price'
+            $marketPrice = optional($userCard->cardTemplate->prices->sortByDesc('created_at')->first())->price ?? 0;
+
             return [
                 'collection_id' => $userCard->id,
-                'is_favorite' => $userCard->is_favorite,
-                'quantity' => $userCard->quantity,
-                'state' => $userCard->cardState->name ?? null,
-                'name' => $userCard->cardTemplate->name,
-                'image_url' => $userCard->cardTemplate->image_url,
-                'set_name' => $userCard->cardTemplate->cardSet->name ?? 'Desconocido',
-                'market_price' => $userCard->cardTemplate->market_price ?? 0,
+                'id'            => $userCard->cardTemplate->id,
+                'is_favorite'   => (bool) $userCard->is_favorite,
+                'quantity'      => $userCard->quantity,
+                'state'         => $userCard->cardState->name ?? null,
+                'name'          => $userCard->cardTemplate->name,
+                'card_number'   => $userCard->cardTemplate->card_number,
+                'unique_id'     => $userCard->cardTemplate->unique_id ?? null,
+                'image_url'     => $userCard->cardTemplate->image_url,
+                'set_name'      => $userCard->cardTemplate->cardSet->name ?? 'Desconocido',
+                'market_price'  => $marketPrice, 
             ];
         });
 
         // 3. Extra: Si es la primera página, mandamos la info del Set para la cabecera
         $setInfo = null;
         if ($paginatedCards->currentPage() === 1) {
-            $set = \DB::table('card_sets')->where('id', $setId)->first();
+            // Hacemos un JOIN con la tabla games para traernos el slug mágico
+            $set = \DB::table('card_sets')
+                ->join('games', 'card_sets.game_id', '=', 'games.id')
+                ->where('card_sets.id', $setId)
+                ->select('card_sets.name', 'card_sets.total_cards', 'games.slug as game_slug')
+                ->first();
             
             $ownedUnique = \DB::table('user_cards')
                 ->join('card_templates', 'user_cards.card_template_id', '=', 'card_templates.id')
@@ -438,9 +468,10 @@ class CollectionController extends Controller
 
             if ($set) {
                 $setInfo = [
-                    'name' => $set->name,
-                    'total_cards' => $set->total_cards,
-                    'owned_unique' => $ownedUnique
+                    'name'         => $set->name,
+                    'total_cards'  => $set->total_cards,
+                    'owned_unique' => $ownedUnique,
+                    'game_slug'    => $set->game_slug // <-- Aquí enviamos el tema
                 ];
             }
         }

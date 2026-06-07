@@ -27,6 +27,12 @@ class CardTemplate extends Model
         return $this->hasMany(CardPrice::class);
     }
 
+    // O si guardas un historial (relación 1 a N) y quieres el último:
+    public function latestPrice()
+    {
+        return $this->hasOne(CardPrice::class, 'card_template_id')->latestOfMany();
+    }
+
     /**
      * Usuarios que tienen esta carta en su lista de deseos.
      */
