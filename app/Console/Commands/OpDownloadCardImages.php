@@ -40,8 +40,16 @@ class OpDownloadCardImages extends Command
                     Storage::disk('public')->makeDirectory($imagesPath);
 
                     $url = $card['image_url'];
-                    $extension = pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION) ?: 'png';
-                    $fileName = $card['id'] . '.' . $extension;
+                    
+                    // 🚀 LA MAGIA: Extraemos el nombre original (ej. EB04-001_p1.png)
+                    $parsedPath = parse_url($url, PHP_URL_PATH);
+                    $fileName = basename($parsedPath);
+                    
+                    // Fallback de seguridad por si la URL es extraña
+                    if (empty($fileName)) {
+                        $extension = pathinfo($parsedPath, PATHINFO_EXTENSION) ?: 'png';
+                        $fileName = $card['id'] . '.' . $extension;
+                    }
                     
                     // Ruta final del archivo
                     $imageFullPath = "{$imagesPath}/{$fileName}";
